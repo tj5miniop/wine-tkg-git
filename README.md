@@ -1,3 +1,12 @@
+# Custom Builds of Wine & Proton for tj5-os (Other Distros should work fine as well)
+
+- Monthly/Regular (when needed) updates
+
+
+
+
+## Original README 
+
 # Wine to rule them all !
 
 You must be logged in to GitHub in order to download Wine or Proton nightly builds.

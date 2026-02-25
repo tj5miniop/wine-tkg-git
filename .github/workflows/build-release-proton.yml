@@ -1,4 +1,4 @@
-name: Proton nopackage Arch Linux CI
+name: Build Proton & Release (arch)
 
 on:
   schedule:

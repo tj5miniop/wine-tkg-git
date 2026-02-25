@@ -1,0 +1,52 @@
+name: Proton nopackage Arch Linux CI
+
+on:
+  schedule:
+    - cron: '25 9,21 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    # Added permissions so the workflow can create releases
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetches all history for an accurate changelog
+
+      - name: Set Variables
+        id: vars
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Compile
+        run: |
+          echo -e "[multilib]\nInclude = /etc/pacman.d/mirrorlist" >> /etc/pacman.conf
+          pacman -Syu --noconfirm base-devel sudo lib32-jack2
+          useradd user -G wheel && echo "user ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          chown user -R ..
+          chown user -R /tmp
+          export CARGO_HOME="$PWD"
+          cd proton-tkg
+          sed -i 's/uninstaller="false"/uninstaller="true"/' proton-tkg.cfg
+          sed -i 's/autoinstall="false"/autoinstall="true"/' proton-tkg.cfg
+          sed -i 's/LOCAL_PRESET=""/LOCAL_PRESET="none"/' proton-tkg.cfg
+          sed -i 's/build_gstreamer="false"/build_gstreamer="true"/' proton-tkg.cfg
+          sed -i 's/lib32_gstreamer="false"/lib32_gstreamer="true"/' proton-tkg.cfg
+          sed -i 's/wayland_driver="false"/wayland_driver="true"/' proton-tkg.cfg
+          sed -i 's/_no_container="false"/_no_container="true"/' proton-tkg.sh
+          touch tarplz
+          yes|./proton-tkg.sh
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ steps.vars.outputs.date }}-${{ github.run_number }}
+          name: Proton Build - ${{ steps.vars.outputs.date }}
+          files: proton-tkg/built/*.tar
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

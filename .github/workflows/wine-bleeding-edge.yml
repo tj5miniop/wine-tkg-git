@@ -34,8 +34,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ steps.vars.outputs.date }}-${{ github.run_number }}
-          name: Proton Build - ${{ steps.vars.outputs.date }}
-          files: proton-tkg/built/*.tar
+          name: Wine Build - ${{ steps.vars.outputs.date }}
+          files: wine-tkg-git/non-makepkg-builds/*.tar
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

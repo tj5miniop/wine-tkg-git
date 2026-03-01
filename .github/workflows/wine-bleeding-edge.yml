@@ -1,4 +1,4 @@
-name: Wine Valve exp bleeding edge CI
+name: Wine Valve exp bleeding edge CI (Release)
 
 on:
   schedule:
@@ -28,3 +28,14 @@ jobs:
         with:
           name: wine-tkg-build
           path: wine-tkg-git/non-makepkg-builds
+
+          
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ steps.vars.outputs.date }}-${{ github.run_number }}
+          name: Proton Build - ${{ steps.vars.outputs.date }}
+          files: proton-tkg/built/*.tar
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

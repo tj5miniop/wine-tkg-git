@@ -42,6 +42,15 @@ diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
 index 0c25fe14133..c659684e307 100644
 --- a/dlls/ntdll/loader.c
 +++ b/dlls/ntdll/loader.c
+@@ -1687,7 +1727,7 @@
+ 
+     /* Skip calls for modules loaded with special load flags */
+ 
+-    if (wm->ldr.Flags & LDR_DONT_RESOLVE_REFS) return STATUS_SUCCESS;
++    if (wm->ldr.Flags & (LDR_DONT_RESOLVE_REFS | LDR_DONT_CALL_DLLMAIN)) return STATUS_SUCCESS;
+     if (wm->ldr.TlsIndex == -1) call_tls_callbacks( wm->ldr.DllBase, reason );
+     if (!entry) return STATUS_SUCCESS;
+ 
 @@ -2206,12 +2206,16 @@ static NTSTATUS build_module( LPCWSTR load_path, const UNICODE_STRING *nt_name,
                                DWORD flags, BOOL system, WINE_MODREF **pwm )
  {
@@ -84,7 +93,7 @@ index 0c25fe14133..c659684e307 100644
 +
      /* fixup imports */
  
-     if (!(flags & DONT_RESOLVE_DLL_REFERENCES) &&
+     if (!(flags & DONT_RESOLVE_DLL_REFERENCES) && 
 diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
 index 68cd4f50420..f57b16c548a 100644
 --- a/dlls/ntdll/unix/loader.c
@@ -367,50 +376,47 @@ diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
 index 8ae7afc769e..a4345a5b589 100644
 --- a/dlls/ntdll/unix/signal_i386.c
 +++ b/dlls/ntdll/unix/signal_i386.c
-@@ -1905,6 +1905,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
-     struct xcontext xcontext;
-     ucontext_t *ucontext = sigcontext;
-     void *stack = setup_exception_record( sigcontext, &rec, &xcontext );
+@@ -1905,5 +1905,6 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+     ucontext_t *sigcontext = _sigcontext;
+     struct thread_data *data = init_handler( sigcontext );
+     void *stack = get_exception_stack( data, sigcontext );
 +    void *steamclient_addr = NULL;
- 
-     switch (TRAP_sig(ucontext))
-     {
+     struct xcontext xcontext;
+     EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)EIP_sig( sigcontext ) };
 @@ -1939,6 +1940,12 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
          }
          break;
      case TRAP_x86_PAGEFLT:  /* Page fault */
-+        if ((steamclient_addr = steamclient_handle_fault( siginfo->si_addr, (ERROR_sig(ucontext) >> 1) & 0x09 )))
++        if ((steamclient_addr = steamclient_handle_fault( siginfo->si_addr, (ERROR_sig(sigcontext) >> 1) & 0x09 )))
 +        {
-+            EIP_sig(ucontext) = (intptr_t)steamclient_addr;
++            EIP_sig(sigcontext) = (intptr_t)steamclient_addr;
 +            return;
 +        }
 +
          rec.NumberParameters = 2;
-         rec.ExceptionInformation[0] = (ERROR_sig(ucontext) >> 1) & 0x09;
+         rec.ExceptionInformation[0] = (ERROR_sig(sigcontext) >> 1) & 0x09;
          rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
 diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
 index caa85249896..aace1b59b03 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
-@@ -1977,6 +1977,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
-     ucontext_t *ucontext = init_handler( sigcontext );
-     EXCEPTION_RECORD rec = { 0 };
-     struct xcontext context;
+@@ -1977,4 +1977,5 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+     ucontext_t *sigcontext = _sigcontext;
+     struct thread_data *data = init_handler( sigcontext );
 +    void *steamclient_addr = NULL;
- 
-     rec.ExceptionAddress = (void *)RIP_sig(ucontext);
-     save_context( &context, ucontext );
+     struct xcontext context;
+     EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)RIP_sig(sigcontext) };
 @@ -2295,6 +2494,11 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
          }
          break;
      case TRAP_x86_PAGEFLT:  /* Page fault */
-+        if ((steamclient_addr = steamclient_handle_fault( siginfo->si_addr, (ERROR_sig(ucontext) >> 1) & 0x09 )))
++        if ((steamclient_addr = steamclient_handle_fault( siginfo->si_addr, (ERROR_sig(sigcontext) >> 1) & 0x09 )))
 +        {
-+            RIP_sig(ucontext) = (intptr_t)steamclient_addr;
++            RIP_sig(sigcontext) = (intptr_t)steamclient_addr;
 +            return;
 +        }
          rec.NumberParameters = 2;
-         rec.ExceptionInformation[0] = (ERROR_sig(ucontext) >> 1) & 0x09;
+         rec.ExceptionInformation[0] = (ERROR_sig(sigcontext) >> 1) & 0x09;
          rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
 diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
 index f840045f841..2f956af6966 100644
@@ -1023,10 +1029,9 @@ index 56a110882ed..321b91d20e0 100644
  #ifdef HAVE_SYS_SYSCALL_H
  # include <sys/syscall.h>
  #endif
-@@ -1455,6 +1458,8 @@ size_t server_init_process(void)
+@@ -1455,5 +1458,7 @@ size_t server_init_process(void)
      struct sigaction sig_act;
      size_t info_size;
-     DWORD pid, tid;
 +    struct rlimit rlimit;
 +    int nice_limit = 0;
 
@@ -1068,11 +1073,12 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 880ad794982..42eae1db9f3 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -941,6 +941,7 @@ typedef struct
+@@ -941,7 +941,8 @@ typedef struct
      int          debug_level;  /* new debug level */
      int          reply_fd;     /* fd for reply pipe */
      int          wait_fd;      /* fd for blocking calls pipe */
 +    char         nice_limit;   /* RLIMIT_NICE of new thread */
+     unsigned int page_size;    /* client page size */
  @REPLY
      process_id_t pid;          /* process id of the new thread's process */
      thread_id_t  tid;          /* thread id of the new thread */
@@ -1168,10 +1174,8 @@ index da6f55ddb83..dda6ba4ee53 100644
          us = &((WIN16_SUBSYSTEM_TIB *)NtCurrentTeb()->Tib.SubSystemTib)->curdir.DosPath;
      else
          us = &NtCurrentTeb()->Peb->ProcessParameters->CurrentDirectory.DosPath;
-@@ -927,7 +927,7 @@ NTSTATUS WINAPI RtlSetCurrentDirectory_U(const UNICODE_STRING* dir)
-
+@@ -927,5 +927,5 @@ NTSTATUS WINAPI RtlSetCurrentDirectory_U(const UNICODE_STRING* dir)
      RtlAcquirePebLock();
-
 -    if (NtCurrentTeb()->Tib.SubSystemTib)  /* FIXME: hack */
 +    if (0 && NtCurrentTeb()->Tib.SubSystemTib)  /* FIXME: hack */
          curdir = &((WIN16_SUBSYSTEM_TIB *)NtCurrentTeb()->Tib.SubSystemTib)->curdir;
@@ -1292,3 +1296,157 @@ index f754078acf7..a2c93cb6c1b 100644
          mapping->image.image_flags |= IMAGE_FLAGS_ImageDynamicallyRelocated;
  
      align_mask = max( mapping->image.alignment - 1, page_mask );
+From 3145f4877a722949ccb27fee02020f7276408d44 Mon Sep 17 00:00:00 2001
+From: Tk-Glitch <ti3nou@gmail.com>
+Date: Tue, 01 Sep 2026 01:00:00 +0200
+Subject: [PATCH] ntdll: Add PROTON_DISABLE_LSTEAMCLIENT option and steamclient fixups.
+
+Port of the remaining lsteamclient changes from Proton 11:
+- get_env()/use_lsteamclient(): honor PROTON_DISABLE_LSTEAMCLIENT env var.
+- import_dll: redirect tier0_s64/vstdlib_s64 imports to ntdll for Win Steam libs.
+- build_module: flush instruction cache after trampoline setup, restore
+  OptionalHeader.ImageBase from the on-disk image, and only set
+  LDR_DONT_CALL_DLLMAIN (instead of DONT_RESOLVE) for 64-bit steamclient.
+
+---
+ dlls/ntdll/loader.c | 78 +75, -3
+ 1 file changed, 75 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 4eb6dd7..f5fa7d3 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -211,6 +211,21 @@
+     return ((*name && (name[1] == ':')) || wcschr(name, '/') || wcschr(name, '\\'));
+ }
+ 
++static BOOL get_env( const WCHAR *var, WCHAR *val, unsigned int len )
++{
++    UNICODE_STRING name, value;
++
++    name.Length = wcslen( var ) * sizeof(WCHAR);
++    name.MaximumLength = name.Length + sizeof(WCHAR);
++    name.Buffer = (WCHAR *)var;
++
++    value.Length = 0;
++    value.MaximumLength = len;
++    value.Buffer = val;
++
++    return !RtlQueryEnvironmentVariable_U( NULL, &name, &value );
++}
++
+ #define RTL_UNLOAD_EVENT_TRACE_NUMBER 64
+ 
+ typedef struct _RTL_UNLOAD_EVENT_TRACE
+@@ -1139,6 +1154,19 @@
+ }
+ 
+ 
++static int use_lsteamclient(void)
++{
++    WCHAR env[32];
++    static int use = -1;
++
++    if (use != -1) return use;
++
++    use = !get_env( L"PROTON_DISABLE_LSTEAMCLIENT", env, sizeof(env) ) || *env == '0';
++    if (!use)
++        ERR("lsteamclient disabled.\n");
++    return use;
++}
++
+ /*************************************************************************
+  *		import_dll
+  *
+@@ -1202,10 +1202,22 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
+         WARN( "Skipping unused import %s\n", name );
+         *pwm = NULL;
+         return TRUE;
+     }
+ 
++    if (use_lsteamclient())
++    {
++        if ((!strcmp(name, "tier0_s64.dll") || !strcmp(name, "vstdlib_s64.dll")) && wm->ldr.BaseDllName.Buffer
++            && (!wcscmp(wm->ldr.BaseDllName.Buffer, L"steamclient64.dll")
++                || !wcscmp(wm->ldr.BaseDllName.Buffer, L"gameoverlayrenderer64.dll")))
++        {
++            TRACE("%s -> ntdll.\n", name);
++            name = "ntdll.dll";
++            len = strlen(name);
++        }
++    }
++
+     status = build_import_name( wm, buffer, name, len );
+     if (!status) status = load_dll( load_path, buffer, 0, &wmImp, system );
+ 
+     if (status)
+     {
+@@ -2375,6 +2415,7 @@
+     SIZE_T map_size;
+     WCHAR *basename, *tmp;
+     ULONG basename_len;
++    BOOL is_steamclient32;
+ 
+     if (!(nt = RtlImageNtHeader( *module ))) return STATUS_INVALID_IMAGE_FORMAT;
+ 
+@@ -2402,7 +2443,7 @@
+     basename_len = wcslen(basename);
+     if (basename_len >= 4 && !wcscmp(basename + basename_len - 4, L".dll")) basename_len -= 4;
+ 
+-    if ((!RtlCompareUnicodeStrings(basename, basename_len, L"steamclient", 11, TRUE) ||
++    if (use_lsteamclient() && ((is_steamclient32 = !RtlCompareUnicodeStrings(basename, basename_len, L"steamclient", 11, TRUE)) ||
+          !RtlCompareUnicodeStrings(basename, basename_len, L"steamclient64", 13, TRUE) ||
+          !RtlCompareUnicodeStrings(basename, basename_len, L"gameoverlayrenderer", 19, TRUE) ||
+          !RtlCompareUnicodeStrings(basename, basename_len, L"gameoverlayrenderer64", 21, TRUE)) &&
+@@ -2411,8 +2452,39 @@
+     {
+         struct steamclient_setup_trampolines_params params = {.src_mod = *module, .tgt_mod = lsteamclient};
+         WINE_UNIX_CALL( unix_steamclient_setup_trampolines, &params );
+-        wm->ldr.Flags |= LDR_DONT_RESOLVE_REFS;
+-        flags |= DONT_RESOLVE_DLL_REFERENCES;
++        NtFlushInstructionCache( NtCurrentProcess(), *module, map_size );
++        if (is_steamclient32)
++        {
++            OBJECT_ATTRIBUTES attr;
++            void *addr = *module;
++            SIZE_T size = 0x1000;
++            LARGE_INTEGER offset;
++            IO_STATUS_BLOCK io;
++            DWORD protect_old;
++            HANDLE file;
++
++            wm->ldr.Flags |= LDR_DONT_RESOLVE_REFS;
++            flags |= LDR_DONT_RESOLVE_REFS;
++
++            NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, PAGE_READWRITE, &protect_old );
++            memset( &attr, 0, sizeof(attr) );
++            attr.Length = sizeof(attr);
++            attr.Attributes = OBJ_CASE_INSENSITIVE;
++            attr.ObjectName = (UNICODE_STRING *)nt_name;
++            NtOpenFile( &file, GENERIC_READ | SYNCHRONIZE, &attr, &io,
++                        FILE_SHARE_READ | FILE_SHARE_DELETE,
++                        FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE );
++            offset.QuadPart = (ULONG_PTR)&nt->OptionalHeader.ImageBase - (ULONG_PTR)addr;
++            NtReadFile( file, 0, NULL, NULL, &io, &nt->OptionalHeader.ImageBase,
++                        sizeof(nt->OptionalHeader.ImageBase), &offset, NULL );
++            NtClose( file );
++            TRACE( "steamclient ImageBase %#Ix.\n", nt->OptionalHeader.ImageBase );
++            NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, protect_old, &protect_old );
++        }
++        else
++        {
++            wm->ldr.Flags |= LDR_DONT_CALL_DLLMAIN;
++        }
+     }
+ 
+     /* fixup imports */
+diff --git a/include/winternl.h b/include/winternl.h
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -4022,6 +4022,7 @@
+ 
+ /* this one is Wine specific */
+ #define LDR_WINE_INTERNAL               0x80000000
++#define LDR_DONT_CALL_DLLMAIN           0x20000000
+ 
+ /* flag for LdrAddRefDll */
